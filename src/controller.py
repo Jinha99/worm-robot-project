@@ -145,7 +145,11 @@ class Controller(AtomicDEVS):
             pass
 
         # 기본 휴리스틱 정책
-        distance = obs["distance_to_goal"]
+        goal_pos = obs["goal_position"]
+        tail_pos = obs["own_tail"]
+        
+        # 목적지까지의 맨해튼 거리 계산
+        distance = abs(goal_pos[0] - tail_pos[0]) + abs(goal_pos[1] - tail_pos[1])
 
         # 간단한 휴리스틱: 거리가 멀면 전진, 가까우면 다양한 행동
         if distance > 2:

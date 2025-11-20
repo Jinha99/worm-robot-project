@@ -53,6 +53,14 @@ STATUS_FAIL = "fail"
 
 
 # ========================================
+# 목적지 설정
+# ========================================
+
+# 4개의 목적지 (십자 패턴)
+GOAL_POSITIONS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+
+
+# ========================================
 # 로봇 초기 설정
 # ========================================
 
@@ -61,12 +69,31 @@ NUM_ROBOTS = 4
 
 def generate_random_robot_configs(num_robots=NUM_ROBOTS):
     """
-    격자 내에서 랜덤한 위치에 로봇들을 배치합니다.
+    격자 내에서 랜덤한 위치에 로봇들을 배치하고, 각 로봇에게 서로 다른 목적지를 할당합니다.
     로봇끼리 겹치지 않도록 보장합니다.
     
+    Args:
+        num_robots: 로봇 수 (최대 4개)
+    
     Returns:
-        list: 로봇 설정 리스트 [{"id": int, "head": tuple, "tail": tuple, "dir": int}, ...]
+        list: 로봇 설정 리스트 [{"id": int, "head": tuple, "tail": tuple, "dir": int, "goal": tuple}, ...]
+    
+    Raises:
+        ValueError: 로봇 수가 목적지 수보다 많을 경우
+        RuntimeError: 로봇 배치에 실패한 경우
     """
+    # 로봇 수 검증
+    if num_robots > len(GOAL_POSITIONS):
+        raise ValueError(
+            f"로봇 수({num_robots})가 목적지 수({len(GOAL_POSITIONS)})보다 많습니다. "
+            f"로봇 수는 최대 {len(GOAL_POSITIONS)}개까지 가능합니다."
+        )
+    
+    # 목적지를 랜덤하게 섞어서 각 로봇에게 할당
+    available_goals = GOAL_POSITIONS.copy()
+    random.shuffle(available_goals)
+    assigned_goals = available_goals[:num_robots]
+    
     occupied_cells = set()
     robot_configs = []
     
@@ -103,7 +130,8 @@ def generate_random_robot_configs(num_robots=NUM_ROBOTS):
                     "id": robot_id,
                     "head": head,
                     "tail": tail,
-                    "dir": direction
+                    "dir": direction,
+                    "goal": assigned_goals[robot_id]  # 목적지 할당
                 })
                 
                 placed = True

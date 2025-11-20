@@ -46,9 +46,10 @@ class WormRobotSystem(CoupledDEVS):
             )
             self.robots.append(self.addSubModel(robot))
 
-        # 환경 생성
+        # 환경 생성 (목적지 정보 포함)
+        robot_goals = {config["id"]: config["goal"] for config in robot_configs}
         self.environment = self.addSubModel(
-            Environment(num_robots=NUM_ROBOTS, initial_positions=robot_configs)
+            Environment(num_robots=NUM_ROBOTS, initial_positions=robot_configs, robot_goals=robot_goals)
         )
 
         # 컨트롤러 생성

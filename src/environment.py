@@ -41,16 +41,18 @@ class EnvironmentState:
 class Environment(AtomicDEVS):
     """로봇들이 활동하는 환경의 DEVS 모델"""
 
-    def __init__(self, num_robots=4, initial_positions=None):
+    def __init__(self, num_robots=4, initial_positions=None, robot_goals=None):
         """
         Args:
             num_robots: 로봇 수
             initial_positions: 초기 로봇 위치 리스트
+            robot_goals: 각 로봇의 목적지 딕셔너리 {robot_id: goal_position}
         """
         AtomicDEVS.__init__(self, "Environment")
         self.num_robots = num_robots
         self.state = EnvironmentState()
         self.initial_positions = initial_positions or []
+        self.robot_goals = robot_goals or {}  # 각 로봇의 목적지
 
         # 로봇 초기 위치 설정
         for pos_data in self.initial_positions:
@@ -175,25 +177,23 @@ class Environment(AtomicDEVS):
         return False
 
     def _check_win(self):
-        """승리 조건 확인: 모든 뒷발이 (0,0)에 있고, 앞발이 십자 패턴"""
+        """승리 조건 확인: 모든 로봇이 자신의 목적지에 도달"""
         if len(self.state.robot_positions) < self.num_robots:
             return False
 
-        target_heads = {(1, 0), (-1, 0), (0, 1), (0, -1)}
-        actual_heads = set()
-
+        # 각 로봇이 자신의 목적지에 도달했는지 확인
         for rid, pos_data in self.state.robot_positions.items():
-            # 뒷발이 중앙에 있는지 확인
+            # 뒷발이 중앙 (0,0)에 있는지 확인
             if pos_data["tail"] != (0, 0):
                 return False
-            actual_heads.add(pos_data["head"])
+            
+            # 앞발이 목적지에 있는지 확인
+            goal_position = self.robot_goals.get(rid)
+            if goal_position is None or pos_data["head"] != goal_position:
+                return False
 
-        # 앞발이 십자 패턴을 이루는지 확인
-        if actual_heads == target_heads:
-            print(f"[승리] 모든 로봇이 중앙에 성공적으로 모였습니다!")
-            return True
-
-        return False
+        print(f"[승리] 모든 로봇이 자신의 목적지에 성공적으로 도착했습니다!")
+        return True
 
     def _generate_observations(self):
         """각 로봇의 센서 관찰 데이터 생성"""
@@ -220,7 +220,7 @@ class Environment(AtomicDEVS):
                 "own_tail": pos_data["tail"],
                 "own_direction": pos_data["direction"],
                 "detected_robots": detected,
-                "distance_to_goal": abs(pos_data["tail"][0]) + abs(pos_data["tail"][1])
+                "goal_position": self.robot_goals.get(rid, (0, 0))  # 목적지 좌표 전달
             }
 
         return observations
