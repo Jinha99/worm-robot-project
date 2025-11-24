@@ -80,7 +80,8 @@ class DQNTrainer:
             "episode_losses": [],
             "success_count": 0,
             "partial_success_count": 0,
-            "fail_count": 0
+            "fail_count": 0,
+            "timeout_count": 0  # 시간 초과 카운트 추가
         }
 
     def train(self):
@@ -107,6 +108,8 @@ class DQNTrainer:
                 self.stats["partial_success_count"] += 1
             elif episode_status == STATUS_FAIL:
                 self.stats["fail_count"] += 1
+            else:  # STATUS_RUNNING (시간 초과)
+                self.stats["timeout_count"] += 1
             
             # 학습 (배치가 충분히 쌓이면)
             if len(self.replay_buffer) >= self.batch_size:
@@ -135,21 +138,30 @@ class DQNTrainer:
                 self.writer.add_scalar('Success/total', self.stats["success_count"], episode)
                 self.writer.add_scalar('Success/partial', self.stats["partial_success_count"], episode)
                 self.writer.add_scalar('Fail/total', self.stats["fail_count"], episode)
+                self.writer.add_scalar('Timeout/total', self.stats["timeout_count"], episode)
                 self.writer.add_scalar('Experiences/episode', num_experiences, episode)
 
-                # 성공/부분성공/실패를 0 또는 1로 기록
+                # 성공/부분성공/실패/시간초과를 0 또는 1로 기록
                 if episode_status == STATUS_WIN:
                     self.writer.add_scalar('Result/win', 1, episode)
                     self.writer.add_scalar('Result/partial', 0, episode)
                     self.writer.add_scalar('Result/fail', 0, episode)
+                    self.writer.add_scalar('Result/timeout', 0, episode)
                 elif episode_status == STATUS_PARTIAL_WIN:
                     self.writer.add_scalar('Result/win', 0, episode)
                     self.writer.add_scalar('Result/partial', 1, episode)
                     self.writer.add_scalar('Result/fail', 0, episode)
+                    self.writer.add_scalar('Result/timeout', 0, episode)
                 elif episode_status == STATUS_FAIL:
                     self.writer.add_scalar('Result/win', 0, episode)
                     self.writer.add_scalar('Result/partial', 0, episode)
                     self.writer.add_scalar('Result/fail', 1, episode)
+                    self.writer.add_scalar('Result/timeout', 0, episode)
+                else:  # STATUS_RUNNING (시간 초과)
+                    self.writer.add_scalar('Result/win', 0, episode)
+                    self.writer.add_scalar('Result/partial', 0, episode)
+                    self.writer.add_scalar('Result/fail', 0, episode)
+                    self.writer.add_scalar('Result/timeout', 1, episode)
             
             # 로그 출력
             if (episode + 1) % self.log_interval == 0:
@@ -164,9 +176,10 @@ class DQNTrainer:
                     f"Steps: {avg_steps:4.1f} | "
                     f"Loss: {avg_loss:.4f} | "
                     f"ε: {self.agent.epsilon:.3f} | "
-                    f"Win: {self.stats['success_count']:3d} | "
-                    f"Partial: {self.stats['partial_success_count']:3d} | "
-                    f"Fail: {self.stats['fail_count']:3d}"
+                    f"W: {self.stats['success_count']:3d} | "
+                    f"P: {self.stats['partial_success_count']:3d} | "
+                    f"F: {self.stats['fail_count']:3d} | "
+                    f"T: {self.stats['timeout_count']:3d}"
                 )
             
             # 모델 저장
@@ -183,13 +196,12 @@ class DQNTrainer:
         
         print("\n" + "=" * 60)
         print("학습 완료!")
-        print(f"총 완전 성공: {self.stats['success_count']}")
-        print(f"총 부분 성공: {self.stats['partial_success_count']}")
-        print(f"총 실패: {self.stats['fail_count']}")
-        print(f"완전 성공률: {self.stats['success_count'] / self.num_episodes * 100:.1f}%")
-        print(f"부분 성공률: {self.stats['partial_success_count'] / self.num_episodes * 100:.1f}%")
+        print(f"총 완전 성공: {self.stats['success_count']} ({self.stats['success_count'] / self.num_episodes * 100:.1f}%)")
+        print(f"총 부분 성공: {self.stats['partial_success_count']} ({self.stats['partial_success_count'] / self.num_episodes * 100:.1f}%)")
+        print(f"총 충돌 실패: {self.stats['fail_count']} ({self.stats['fail_count'] / self.num_episodes * 100:.1f}%)")
+        print(f"총 시간 초과: {self.stats['timeout_count']} ({self.stats['timeout_count'] / self.num_episodes * 100:.1f}%)")
         combined_success = self.stats['success_count'] + self.stats['partial_success_count']
-        print(f"전체 성공률 (부분+완전): {combined_success / self.num_episodes * 100:.1f}%")
+        print(f"전체 성공률: {combined_success / self.num_episodes * 100:.1f}%")
         print("=" * 60)
         
         return self.stats

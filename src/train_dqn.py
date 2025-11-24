@@ -57,7 +57,7 @@ def main():
         agent=agent,
         create_system_fn=create_system,
         num_episodes=5000,              # 개선된 보상으로 재학습
-        termination_time=100,     # 시뮬레이션 최대 시간 (200 → 100초로 단축)
+        termination_time=200,     # 시뮬레이션 최대 시간 (충분한 학습 시간 제공)
         batch_size=32,
         buffer_size=10000,
         log_interval=10,          # 10 에피소드마다 로그 출력
