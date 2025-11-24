@@ -246,7 +246,7 @@ class Environment(AtomicDEVS):
         return observations
     
     def _calculate_rewards(self):
-        """각 로봇의 보상 계산 (개선된 버전 - 더 명확한 학습 신호)"""
+        """각 로봇의 보상 계산 (개선된 버전 - 충돌 회피 및 무효 행동 페널티 포함)"""
         for rid, pos_data in self.state.robot_positions.items():
             reward = 0.0
 
@@ -276,12 +276,31 @@ class Environment(AtomicDEVS):
                 elif dist_change < 0:
                     # 멀어지면 페널티 (더 강하게)
                     reward += dist_change * 5.0
-                # dist_change == 0이면 보상 없음
+                else:
+                    # 거리 변화 없음 (무효 행동) - 페널티
+                    reward -= 3.0
 
             # 현재 거리 저장
             self.state.prev_distances[rid] = total_dist
 
-            # 3. 중간 목표 달성 보너스
+            # 3. 충돌 회피 페널티 (다른 로봇과의 거리)
+            for other_rid, other_pos in self.state.robot_positions.items():
+                if other_rid == rid:
+                    continue
+
+                # 다른 로봇의 머리/꼬리와의 거리 계산
+                dist_to_other_head = abs(head[0] - other_pos["head"][0]) + abs(head[1] - other_pos["head"][1])
+                dist_to_other_tail = abs(head[0] - other_pos["tail"][0]) + abs(head[1] - other_pos["tail"][1])
+                min_dist = min(dist_to_other_head, dist_to_other_tail)
+
+                if min_dist == 1:
+                    # 매우 가까움 (충돌 직전) - 큰 페널티
+                    reward -= 15.0
+                elif min_dist == 2:
+                    # 가까움 - 중간 페널티
+                    reward -= 5.0
+
+            # 4. 중간 목표 달성 보너스
             tail_at_center = (tail == (0, 0))
             head_at_goal = (head == goal_head)
 
@@ -298,7 +317,7 @@ class Environment(AtomicDEVS):
                 # 앞발만 목표에 도달
                 reward += 30.0
 
-            # 4. 매우 가까운 거리 보너스 (거의 다 왔음!)
+            # 5. 매우 가까운 거리 보너스 (거의 다 왔음!)
             if total_dist <= 2:
                 reward += 10.0
             elif total_dist <= 4:
