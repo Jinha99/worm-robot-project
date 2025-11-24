@@ -49,6 +49,7 @@ ACTION_TIMES = {
 
 STATUS_RUNNING = "running"
 STATUS_WIN = "win"
+STATUS_PARTIAL_WIN = "partial_win"  # 일부 로봇만 성공
 STATUS_FAIL = "fail"
 
 

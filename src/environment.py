@@ -6,7 +6,7 @@ Worm Robot Simulation - Environment Model
 from pypdevs.DEVS import AtomicDEVS
 from pypdevs.infinity import INFINITY
 
-from config import DIR_NAMES, STATUS_RUNNING, STATUS_WIN, STATUS_FAIL
+from config import DIR_NAMES, STATUS_RUNNING, STATUS_WIN, STATUS_PARTIAL_WIN, STATUS_FAIL
 from utils import in_bounds, get_sensor_area
 
 
@@ -25,6 +25,7 @@ class EnvironmentState:
         self.pending_updates = []  # 대기 중인 로봇 업데이트
         self.rewards = {}          # {robot_id: reward} - 각 로봇의 보상
         self.prev_distances = {}   # {robot_id: distance} - 이전 스텝의 목표까지 거리
+        self.robot_success = {}    # {robot_id: bool} - 각 로봇의 성공 여부
 
     def __str__(self):
         return (
@@ -70,6 +71,7 @@ class Environment(AtomicDEVS):
         # 출력 포트 (컨트롤러로)
         self.obs_out = self.addOutPort("obs_out")          # 관찰 데이터
         self.status_out = self.addOutPort("status_out")    # 게임 상태
+        self.reward_out = self.addOutPort("reward_out")    # 보상 데이터
 
     def timeAdvance(self):
         """시간 진행 함수"""
@@ -115,7 +117,7 @@ class Environment(AtomicDEVS):
         return self.state
 
     def outputFnc(self):
-        """출력 함수 - 관찰 데이터 및 상태 전송"""
+        """출력 함수 - 관찰 데이터, 상태, 보상 전송"""
         # INIT이나 PROCESSING 상태에서만 출력 (IDLE에서는 출력 안함)
         if self.state.phase in ["INIT", "PROCESSING"]:
             obs = self._generate_observations()
@@ -124,7 +126,8 @@ class Environment(AtomicDEVS):
                 self.status_out: {
                     "status": self.state.status,
                     "step": self.state.step_count
-                }
+                },
+                self.reward_out: self.state.rewards.copy()  # 보상 전달
             }
         return {}
 
@@ -182,23 +185,35 @@ class Environment(AtomicDEVS):
         return False
 
     def _check_win(self):
-        """승리 조건 확인: 모든 로봇이 자신의 목적지에 도달"""
+        """승리 조건 확인: 로봇별 성공 여부 체크 및 전체/부분 성공 판정"""
         if len(self.state.robot_positions) < self.num_robots:
             return False
 
-        # 각 로봇이 자신의 목적지에 도달했는지 확인
+        # 각 로봇의 성공 여부 확인
+        success_count = 0
         for rid, pos_data in self.state.robot_positions.items():
-            # 뒷발이 중앙 (0,0)에 있는지 확인
-            if pos_data["tail"] != (0, 0):
-                return False
-            
-            # 앞발이 목적지에 있는지 확인
+            # 뒷발이 중앙 (0,0)에 있고, 앞발이 목적지에 있으면 성공
             goal_position = self.robot_goals.get(rid)
-            if goal_position is None or pos_data["head"] != goal_position:
-                return False
+            if (pos_data["tail"] == (0, 0) and
+                goal_position is not None and
+                pos_data["head"] == goal_position):
+                self.state.robot_success[rid] = True
+                success_count += 1
+            else:
+                self.state.robot_success[rid] = False
 
-        print(f"[승리] 모든 로봇이 자신의 목적지에 성공적으로 도착했습니다!")
-        return True
+        # 전체 성공
+        if success_count == self.num_robots:
+            print(f"[완전 승리] 모든 로봇({self.num_robots}개)이 목적지에 도착했습니다!")
+            return True
+
+        # 부분 성공 (1개 이상 로봇이 성공)
+        if success_count > 0:
+            print(f"[부분 승리] {success_count}/{self.num_robots}개 로봇이 목적지에 도착했습니다!")
+            self.state.status = STATUS_PARTIAL_WIN
+            return False  # 계속 진행
+
+        return False
 
     def _generate_observations(self):
         """각 로봇의 센서 관찰 데이터 생성"""
@@ -231,50 +246,64 @@ class Environment(AtomicDEVS):
         return observations
     
     def _calculate_rewards(self):
-        """각 로봇의 보상 계산 (개선된 버전)"""
+        """각 로봇의 보상 계산 (개선된 버전 - 더 명확한 학습 신호)"""
         for rid, pos_data in self.state.robot_positions.items():
             reward = 0.0
-            
+
             # 현재 위치
             tail = pos_data["tail"]
             head = pos_data["head"]
             goal_head = self.robot_goals.get(rid, (0, 0))
-            
+
             # 목표까지 거리
             tail_dist = abs(tail[0]) + abs(tail[1])
             head_dist = abs(head[0] - goal_head[0]) + abs(head[1] - goal_head[1])
             total_dist = tail_dist + head_dist
-            
-            # 1. 거리 기반 보상 (더 강하게!)
-            # 최대 거리 12 (7x7 격자 대각선) → 0~12를 0~10으로 정규화
-            distance_reward = (12 - total_dist) / 12 * 10
+
+            # 1. 거리 기반 보상 (정규화: 가까울수록 높은 보상)
+            # 최대 거리 12 (7x7 격자 대각선) → -1 ~ +1로 정규화
+            distance_reward = (12 - total_dist) / 6.0 - 1.0  # -1 ~ +1
             reward += distance_reward
-            
-            # 2. 거리 감소 보너스 (가까워지면 추가 보상)
+
+            # 2. 거리 변화 보상 (가까워지면 큰 보너스!)
             if rid in self.state.prev_distances:
                 prev_dist = self.state.prev_distances[rid]
-                if total_dist < prev_dist:
-                    # 가까워지면 큰 보너스!
-                    reward += (prev_dist - total_dist) * 5.0
-                else:
-                    # 멀어지면 페널티
-                    reward += (prev_dist - total_dist) * 2.0
-            
+                dist_change = prev_dist - total_dist
+
+                if dist_change > 0:
+                    # 가까워지면 큰 보너스 (변화량에 비례)
+                    reward += dist_change * 10.0
+                elif dist_change < 0:
+                    # 멀어지면 페널티 (더 강하게)
+                    reward += dist_change * 5.0
+                # dist_change == 0이면 보상 없음
+
             # 현재 거리 저장
             self.state.prev_distances[rid] = total_dist
-            
-            # 3. 뒷발이 중앙에 도달 (중간 목표!)
-            if tail == (0, 0):
-                reward += 50.0
-            
-            # 4. 앞발이 목표에 도달 (중간 목표!)
-            if head == goal_head:
-                reward += 50.0
-            
-            # 5. 완전 성공 (둘 다!)
-            if tail == (0, 0) and head == goal_head:
-                reward += 200.0  # 추가 보너스
-            
+
+            # 3. 중간 목표 달성 보너스
+            tail_at_center = (tail == (0, 0))
+            head_at_goal = (head == goal_head)
+
+            if tail_at_center and head_at_goal:
+                # 완전 성공! (최고 보상)
+                reward += 100.0
+                if rid not in self.state.robot_success or not self.state.robot_success.get(rid, False):
+                    # 처음 성공한 경우 추가 보너스
+                    reward += 50.0
+            elif tail_at_center:
+                # 뒷발만 중앙에 도달
+                reward += 30.0
+            elif head_at_goal:
+                # 앞발만 목표에 도달
+                reward += 30.0
+
+            # 4. 매우 가까운 거리 보너스 (거의 다 왔음!)
+            if total_dist <= 2:
+                reward += 10.0
+            elif total_dist <= 4:
+                reward += 5.0
+
             self.state.rewards[rid] = reward
     
     def get_rewards(self):

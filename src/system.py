@@ -64,6 +64,7 @@ class WormRobotSystem(CoupledDEVS):
         # 포트 연결: 환경 -> 컨트롤러
         self.connectPorts(self.environment.obs_out, self.controller.obs_in)
         self.connectPorts(self.environment.status_out, self.controller.status_in)
+        self.connectPorts(self.environment.reward_out, self.controller.reward_in)
 
         # 포트 연결: 컨트롤러 -> 로봇
         for i, robot in enumerate(self.robots):
