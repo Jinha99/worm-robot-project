@@ -9,7 +9,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pypdevs.simulator import Simulator
 from rl.replay_buffer import ReplayBuffer
-from config import STATUS_RUNNING, STATUS_WIN, STATUS_FAIL
+from config import STATUS_RUNNING, STATUS_WIN, STATUS_PARTIAL_WIN, STATUS_FAIL
 
 try:
     from torch.utils.tensorboard import SummaryWriter  # type: ignore
@@ -79,6 +79,7 @@ class DQNTrainer:
             "episode_steps": [],
             "episode_losses": [],
             "success_count": 0,
+            "partial_success_count": 0,
             "fail_count": 0
         }
 
@@ -94,14 +95,16 @@ class DQNTrainer:
         print("=" * 60)
         
         for episode in range(self.num_episodes):
-            episode_reward, episode_steps, episode_status = self._run_episode()
-            
+            episode_reward, episode_steps, episode_status, num_experiences = self._run_episode()
+
             # 통계 업데이트
             self.stats["episode_rewards"].append(episode_reward)
             self.stats["episode_steps"].append(episode_steps)
-            
+
             if episode_status == STATUS_WIN:
                 self.stats["success_count"] += 1
+            elif episode_status == STATUS_PARTIAL_WIN:
+                self.stats["partial_success_count"] += 1
             elif episode_status == STATUS_FAIL:
                 self.stats["fail_count"] += 1
             
@@ -130,14 +133,22 @@ class DQNTrainer:
                 self.writer.add_scalar('Loss/episode', self.stats["episode_losses"][-1], episode)
                 self.writer.add_scalar('Epsilon', self.agent.epsilon, episode)
                 self.writer.add_scalar('Success/total', self.stats["success_count"], episode)
+                self.writer.add_scalar('Success/partial', self.stats["partial_success_count"], episode)
                 self.writer.add_scalar('Fail/total', self.stats["fail_count"], episode)
-                
-                # 성공/실패를 0 또는 1로 기록
+                self.writer.add_scalar('Experiences/episode', num_experiences, episode)
+
+                # 성공/부분성공/실패를 0 또는 1로 기록
                 if episode_status == STATUS_WIN:
                     self.writer.add_scalar('Result/win', 1, episode)
+                    self.writer.add_scalar('Result/partial', 0, episode)
+                    self.writer.add_scalar('Result/fail', 0, episode)
+                elif episode_status == STATUS_PARTIAL_WIN:
+                    self.writer.add_scalar('Result/win', 0, episode)
+                    self.writer.add_scalar('Result/partial', 1, episode)
                     self.writer.add_scalar('Result/fail', 0, episode)
                 elif episode_status == STATUS_FAIL:
                     self.writer.add_scalar('Result/win', 0, episode)
+                    self.writer.add_scalar('Result/partial', 0, episode)
                     self.writer.add_scalar('Result/fail', 1, episode)
             
             # 로그 출력
@@ -154,6 +165,7 @@ class DQNTrainer:
                     f"Loss: {avg_loss:.4f} | "
                     f"ε: {self.agent.epsilon:.3f} | "
                     f"Win: {self.stats['success_count']:3d} | "
+                    f"Partial: {self.stats['partial_success_count']:3d} | "
                     f"Fail: {self.stats['fail_count']:3d}"
                 )
             
@@ -171,97 +183,60 @@ class DQNTrainer:
         
         print("\n" + "=" * 60)
         print("학습 완료!")
-        print(f"총 성공: {self.stats['success_count']}")
+        print(f"총 완전 성공: {self.stats['success_count']}")
+        print(f"총 부분 성공: {self.stats['partial_success_count']}")
         print(f"총 실패: {self.stats['fail_count']}")
-        print(f"성공률: {self.stats['success_count'] / self.num_episodes * 100:.1f}%")
+        print(f"완전 성공률: {self.stats['success_count'] / self.num_episodes * 100:.1f}%")
+        print(f"부분 성공률: {self.stats['partial_success_count'] / self.num_episodes * 100:.1f}%")
+        combined_success = self.stats['success_count'] + self.stats['partial_success_count']
+        print(f"전체 성공률 (부분+완전): {combined_success / self.num_episodes * 100:.1f}%")
         print("=" * 60)
         
         return self.stats
 
     def _run_episode(self):
         """
-        단일 에피소드 실행
-        
-        간단한 버전: 에피소드 전체 실행 후 최종 상태 기반 보상
-        향후 개선: 스텝별 경험 수집
+        단일 에피소드 실행 (스텝별 경험 수집 버전)
+
+        Returns:
+            tuple: (total_reward, step_count, final_status, num_experiences)
         """
         # 새로운 시스템 생성 (랜덤 초기화)
         system = self.create_system_fn(rl_agent=self.agent)
-        
-        # 초기 상태 수집
-        initial_states = {}
-        for rid in range(system.controller.num_robots):
-            if rid in system.environment.state.robot_positions:
-                obs = system.environment._generate_observations()[rid]
-                state = system.controller._observation_to_state(obs)
-                initial_states[rid] = state
-        
+
         # 시뮬레이터 설정 및 실행
         sim = Simulator(system)
         sim.setClassicDEVS()
         sim.setTerminationTime(self.termination_time)
         sim.simulate()
-        
-        # 최종 상태 및 보상 수집
+
+        # 최종 상태 수집
         final_status = system.environment.state.status
         step_count = system.environment.state.step_count
-        
-        # 각 로봇의 최종 상태
-        final_states = {}
-        for rid in range(system.controller.num_robots):
-            if rid in system.environment.state.robot_positions:
-                obs = system.environment._generate_observations()[rid]
-                state = system.controller._observation_to_state(obs)
-                final_states[rid] = state
-        
-        # 보상 계산 (개선된 버전)
-        total_reward = 0.0
-        for rid in initial_states.keys():
-            if rid in system.environment.state.robot_positions:
-                pos = system.environment.state.robot_positions[rid]
-                tail = pos["tail"]
-                head = pos["head"]
-                goal_head = system.environment.robot_goals.get(rid, (0, 0))
-                
-                # 거리 계산
-                tail_dist = abs(tail[0]) + abs(tail[1])
-                head_dist = abs(head[0] - goal_head[0]) + abs(head[1] - goal_head[1])
-                total_dist = tail_dist + head_dist
-                
-                # 기본 보상: 거리가 가까울수록 높은 보상
-                reward = (12 - total_dist) * 10  # 0~120점
-                
-                # 성공 보너스
-                if final_status == STATUS_WIN:
-                    reward += 300.0
-                elif final_status == STATUS_FAIL:
-                    reward -= 100.0
-                
-                # 부분 성공 보너스
-                if tail == (0, 0):
-                    reward += 50.0  # 뒷발 도착
-                if head == goal_head:
-                    reward += 50.0  # 앞발 도착
-            else:
-                reward = -100.0  # 로봇이 사라짐
-            
-            total_reward += reward
-            
-            # 경험 저장 (초기 상태 → 최종 상태)
-            if rid in initial_states and rid in final_states:
-                # 행동은 간략화 (실제로는 각 로봇의 행동 기록 필요)
-                action = 0  # 임시
-                done = (final_status != STATUS_RUNNING)
-                
-                self.replay_buffer.add(
-                    initial_states[rid],
-                    action,
-                    reward,
-                    final_states[rid],
-                    float(done)
-                )
-        
-        return total_reward, step_count, final_status
+
+        # Controller에서 스텝별 경험 데이터 가져오기
+        experiences = system.controller.get_step_experiences()
+
+        # Replay Buffer에 경험 추가
+        for exp in experiences:
+            state, action, reward, next_state, done = exp
+            self.replay_buffer.add(state, action, reward, next_state, float(done))
+
+        # 에피소드 총 보상 계산 (모든 경험의 보상 합계)
+        total_reward = sum(exp[2] for exp in experiences) if experiences else 0.0
+
+        # 에피소드 종료 시 추가 보상 (전체 결과에 따라)
+        if final_status == STATUS_WIN:
+            # 완전 성공 보너스
+            total_reward += 500.0
+        elif final_status == STATUS_PARTIAL_WIN:
+            # 부분 성공 보너스
+            total_reward += 200.0
+        elif final_status == STATUS_FAIL:
+            # 실패 페널티
+            total_reward -= 100.0
+
+        return total_reward, step_count, final_status, len(experiences)
 
     def _save_model(self):
         """모델 저장"""
@@ -283,10 +258,10 @@ class DQNTrainer:
         self.agent.epsilon = 0.0  # 평가 시에는 탐험 안 함
         
         for episode in range(num_episodes):
-            reward, steps, status = self._run_episode()
+            reward, steps, status, _ = self._run_episode()
             total_rewards.append(reward)
             total_steps.append(steps)
-            
+
             if status == STATUS_WIN:
                 success_count += 1
         
