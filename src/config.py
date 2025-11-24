@@ -65,7 +65,7 @@ GOAL_POSITIONS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
 # 로봇 초기 설정
 # ========================================
 
-NUM_ROBOTS = 4
+NUM_ROBOTS = 2  # 커리큘럼 학습: 2개로 시작 (학습 후 4개로 증가)
 
 
 def generate_random_robot_configs(num_robots=NUM_ROBOTS):
