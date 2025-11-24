@@ -14,7 +14,7 @@ from config import (
     ACTION_ROTATE_CCW,
     ACTION_TIMES,
 )
-from utils import add_pos
+from utils import add_pos, in_bounds
 
 
 # ========================================
@@ -91,7 +91,7 @@ class Robot(AtomicDEVS):
         return self.state
 
     def extTransition(self, inputs):
-        """외부 전이 함수 - 행동 명령 수신"""
+        """외부 전이 함수 - 행동 명령 수신 (격자 이탈 방지)"""
         action = inputs.get(self.action_in)
 
         if action and self.state.phase == "IDLE":
@@ -102,22 +102,38 @@ class Robot(AtomicDEVS):
                 direction_vec = DIRECTIONS[self.state.direction]
                 new_head = add_pos(self.state.head_pos, direction_vec)
                 new_tail = self.state.head_pos
-                self.state.head_pos = new_head
-                self.state.tail_pos = new_tail
+
+                # 격자 범위 체크: 새로운 위치가 모두 범위 내에 있어야 함
+                if in_bounds(new_head) and in_bounds(new_tail):
+                    self.state.head_pos = new_head
+                    self.state.tail_pos = new_tail
+                # else: 격자를 벗어나면 위치 변경 없음 (제자리 유지)
 
             elif action_type == ACTION_ROTATE_CW:
                 # 시계방향 회전: 뒷발 고정, 앞발만 회전
-                self.state.direction = (self.state.direction + 1) % 4
-                direction_vec = DIRECTIONS[self.state.direction]
-                self.state.head_pos = add_pos(self.state.tail_pos, direction_vec)
+                new_direction = (self.state.direction + 1) % 4
+                direction_vec = DIRECTIONS[new_direction]
+                new_head = add_pos(self.state.tail_pos, direction_vec)
+
+                # 격자 범위 체크: 새로운 앞발 위치가 범위 내에 있어야 함
+                if in_bounds(new_head):
+                    self.state.direction = new_direction
+                    self.state.head_pos = new_head
+                # else: 격자를 벗어나면 회전하지 않음
 
             elif action_type == ACTION_ROTATE_CCW:
                 # 반시계방향 회전: 뒷발 고정, 앞발만 회전
-                self.state.direction = (self.state.direction - 1) % 4
-                direction_vec = DIRECTIONS[self.state.direction]
-                self.state.head_pos = add_pos(self.state.tail_pos, direction_vec)
+                new_direction = (self.state.direction - 1) % 4
+                direction_vec = DIRECTIONS[new_direction]
+                new_head = add_pos(self.state.tail_pos, direction_vec)
 
-            # EXECUTING 상태로 전환
+                # 격자 범위 체크: 새로운 앞발 위치가 범위 내에 있어야 함
+                if in_bounds(new_head):
+                    self.state.direction = new_direction
+                    self.state.head_pos = new_head
+                # else: 격자를 벗어나면 회전하지 않음
+
+            # EXECUTING 상태로 전환 (행동이 유효하든 아니든 시간은 소모)
             self.state.phase = "EXECUTING"
             self.state.current_action = action_type
 
