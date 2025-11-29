@@ -135,11 +135,12 @@ class Controller(AtomicDEVS):
 
     def _select_action(self, rid, obs):
         """
-        행동 선택 정책 - 강화학습 연동 지점
+        행동 선택 정책 - 강화학습 연동 지점 + 충돌 회피 + 스마트 회전
 
-        현재는 간단한 휴리스틱 사용:
-        - 목표와 거리가 멀면 주로 전진
-        - 목표와 가까우면 신중하게 회전도 고려
+        정책:
+        1. 앞에 로봇이 있으면 회전만 허용
+        2. 목표 방향 기반 회전 방향 선택
+        3. RL 에이전트가 있으면 에이전트 사용
 
         Args:
             rid: 로봇 ID
@@ -149,44 +150,94 @@ class Controller(AtomicDEVS):
             tuple: (action_dict, action_idx)
                 - action_dict: {"type": action_type} - 로봇에 전송할 행동
                 - action_idx: int (0-2) - 학습에 사용할 행동 인덱스
-
-        강화학습 연동 예시:
-        ----------------------
-        if self.rl_agent is not None:
-            # RL 에이전트를 사용하여 행동 선택
-            state = self._observation_to_state(obs)
-            action = self.rl_agent.get_action(state)
-            return ({"type": action_types[action]}, action)
-        else:
-            # 휴리스틱 사용 (아래 기본 정책)
-            ...
         """
         action_types = [ACTION_MOVE, ACTION_ROTATE_CW, ACTION_ROTATE_CCW]
+
+        # 1. 앞에 로봇이 있는지 확인
+        own_head = obs["own_head"]
+        own_direction = obs["own_direction"]
+        detected_robots = obs["detected_robots"]
+
+        # 현재 방향의 벡터
+        from config import DIRECTIONS
+        direction_vec = DIRECTIONS[own_direction]
+        front_position = (own_head[0] + direction_vec[0], own_head[1] + direction_vec[1])
+
+        # 앞에 다른 로봇이 있는지 체크
+        robot_in_front = False
+        for robot in detected_robots:
+            if robot["head"] == front_position or robot["tail"] == front_position:
+                robot_in_front = True
+                break
 
         if self.rl_agent is not None:
             # RL 에이전트 연동
             state = self._observation_to_state(obs)
             action_idx = self.rl_agent.get_action(state, training=True)
+
+            # 앞에 로봇이 있으면 MOVE 금지
+            if robot_in_front and action_idx == 0:
+                # MOVE 대신 스마트 회전 선택
+                action_idx = self._select_smart_rotation(obs)
+
             return ({"type": action_types[action_idx]}, action_idx)
 
-        # 기본 휴리스틱 정책
-        goal_pos = obs["goal_position"]
-        tail_pos = obs["own_tail"]
-
-        # 목적지까지의 맨해튼 거리 계산
-        distance = abs(goal_pos[0] - tail_pos[0]) + abs(goal_pos[1] - tail_pos[1])
-
-        # 간단한 휴리스틱: 거리가 멀면 전진, 가까우면 다양한 행동
-        if distance > 2:
-            if random.random() < 0.7:
-                action_idx = 0  # MOVE
-            else:
-                action_idx = random.choice([1, 2])  # ROTATE_CW or ROTATE_CCW
+        # 기본 휴리스틱 정책 (RL 없을 때)
+        if robot_in_front:
+            # 앞에 로봇이 있으면 회전만 (스마트 회전)
+            action_idx = self._select_smart_rotation(obs)
         else:
-            # 목표 근처에서는 더 신중하게
-            action_idx = random.choice([0, 1, 2])
+            # 앞이 비어있으면 전진 우선
+            goal_pos = obs["goal_position"]
+            tail_pos = obs["own_tail"]
+            distance = abs(goal_pos[0] - tail_pos[0]) + abs(goal_pos[1] - tail_pos[1])
+
+            if distance > 2:
+                if random.random() < 0.7:
+                    action_idx = 0  # MOVE
+                else:
+                    action_idx = self._select_smart_rotation(obs)
+            else:
+                # 목표 근처에서는 더 신중하게
+                action_idx = random.choice([0, 1, 2])
 
         return ({"type": action_types[action_idx]}, action_idx)
+
+    def _select_smart_rotation(self, obs):
+        """
+        목표 방향 기반 스마트 회전 선택
+
+        Args:
+            obs: 관찰 데이터
+
+        Returns:
+            int: 1 (시계방향) 또는 2 (반시계방향)
+        """
+        from config import DIRECTIONS
+
+        own_head = obs["own_head"]
+        own_direction = obs["own_direction"]
+        goal_position = obs["goal_position"]
+
+        # 목표 벡터 (뒷발이 가야할 곳)
+        goal_vec = (goal_position[0] - own_head[0], goal_position[1] - own_head[1])
+
+        # 현재 방향 벡터
+        current_vec = DIRECTIONS[own_direction]
+
+        # 외적으로 시계/반시계 판단
+        # cross = current_x * goal_y - current_y * goal_x
+        cross = current_vec[0] * goal_vec[1] - current_vec[1] * goal_vec[0]
+
+        if cross > 0:
+            # 목표가 왼쪽에 있음 → 반시계 회전
+            return 2  # ACTION_ROTATE_CCW
+        elif cross < 0:
+            # 목표가 오른쪽에 있음 → 시계 회전
+            return 1  # ACTION_ROTATE_CW
+        else:
+            # 정확히 같은 방향이거나 반대 방향 → 랜덤
+            return random.choice([1, 2])
 
     def _observation_to_state(self, obs):
         """
@@ -207,9 +258,9 @@ class Controller(AtomicDEVS):
         # 목표 위치
         goal_position = obs["goal_position"]
 
-        # 목표까지 벡터 계산
-        vector_to_goal_head = (goal_position[0] - own_head[0], goal_position[1] - own_head[1])
-        vector_to_goal_tail = (0 - own_tail[0], 0 - own_tail[1])  # 뒷발은 항상 (0,0)
+        # 목표까지 벡터 계산 (앞발은 (0,0), 뒷발은 목표 위치)
+        vector_to_goal_head = (0 - own_head[0], 0 - own_head[1])  # 앞발은 항상 (0,0)
+        vector_to_goal_tail = (goal_position[0] - own_tail[0], goal_position[1] - own_tail[1])
 
         # 방향 (0~3)
         direction = obs["own_direction"]
