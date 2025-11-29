@@ -65,24 +65,36 @@ GOAL_POSITIONS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
 # 로봇 초기 설정
 # ========================================
 
-NUM_ROBOTS = 2  # 커리큘럼 학습: 2개로 시작 (학습 후 4개로 증가)
+NUM_ROBOTS = 1  # 커리큘럼 학습 1단계: 1개로 시작 → 2개 → 4개
+
+# 커리큘럼 학습을 위한 로봇 간 최소 거리
+# 1단계 (1개): 0 (거리 제한 없음)
+# 2단계 (2개): 6 (서로 멀리 배치)
+# 3단계 (4개): 0 (거리 제한 없음)
+MIN_ROBOT_DISTANCE = 0  # 현재 1단계: 거리 제한 없음
 
 
-def generate_random_robot_configs(num_robots=NUM_ROBOTS):
+def generate_random_robot_configs(num_robots=NUM_ROBOTS, min_distance=None):
     """
     격자 내에서 랜덤한 위치에 로봇들을 배치하고, 각 로봇에게 서로 다른 목적지를 할당합니다.
     로봇끼리 겹치지 않도록 보장합니다.
-    
+
     Args:
         num_robots: 로봇 수 (최대 4개)
-    
+        min_distance: 로봇 간 최소 맨해튼 거리 (None이면 MIN_ROBOT_DISTANCE 사용)
+                     예: min_distance=6이면 로봇들이 최소 6칸 이상 떨어짐
+
     Returns:
         list: 로봇 설정 리스트 [{"id": int, "head": tuple, "tail": tuple, "dir": int, "goal": tuple}, ...]
-    
+
     Raises:
         ValueError: 로봇 수가 목적지 수보다 많을 경우
         RuntimeError: 로봇 배치에 실패한 경우
     """
+    # min_distance 기본값 설정
+    if min_distance is None:
+        min_distance = MIN_ROBOT_DISTANCE
+
     # 로봇 수 검증
     if num_robots > len(GOAL_POSITIONS):
         raise ValueError(
@@ -124,9 +136,27 @@ def generate_random_robot_configs(num_robots=NUM_ROBOTS):
             
             # head와 tail 모두 비어있는지 확인
             if head not in occupied_cells and tail not in occupied_cells:
+                # min_distance 체크 (다른 로봇들과의 거리)
+                if min_distance > 0:
+                    too_close = False
+                    for existing_config in robot_configs:
+                        # 다른 로봇의 head, tail과의 거리 계산
+                        dist_to_head = abs(head[0] - existing_config["head"][0]) + abs(head[1] - existing_config["head"][1])
+                        dist_to_tail = abs(head[0] - existing_config["tail"][0]) + abs(head[1] - existing_config["tail"][1])
+                        dist_from_tail = abs(tail[0] - existing_config["head"][0]) + abs(tail[1] - existing_config["head"][1])
+
+                        # 모든 부분 간 최소 거리 체크
+                        if min(dist_to_head, dist_to_tail, dist_from_tail) < min_distance:
+                            too_close = True
+                            break
+
+                    if too_close:
+                        continue  # 다시 시도
+
+                # 배치 성공
                 occupied_cells.add(head)
                 occupied_cells.add(tail)
-                
+
                 robot_configs.append({
                     "id": robot_id,
                     "head": head,
@@ -134,7 +164,7 @@ def generate_random_robot_configs(num_robots=NUM_ROBOTS):
                     "dir": direction,
                     "goal": assigned_goals[robot_id]  # 목적지 할당
                 })
-                
+
                 placed = True
                 break
         
