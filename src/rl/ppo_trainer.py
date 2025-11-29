@@ -254,24 +254,9 @@ class PPOTrainer:
         final_status = system.environment.state.status
         step_count = system.environment.state.step_count
 
-        # Controller에서 trajectory 수집
+        # Controller에서 PPO trajectory 수집
         controller = system.controller
-
-        # 각 스텝의 데이터 수집
-        if hasattr(controller, 'step_experiences') and controller.step_experiences:
-            for exp in controller.step_experiences:
-                state, action, reward, next_state, done = exp
-
-                # Controller의 step_data에서 log_prob, value 가져오기
-                # (에피소드 전체를 실행한 후이므로 저장된 데이터 활용)
-                trajectory['states'].append(state)
-                trajectory['actions'].append(action)
-                trajectory['rewards'].append(reward)
-                trajectory['dones'].append(done)
-
-            # log_probs와 values는 별도로 저장되어 있을 수 있음
-            # 여기서는 간단하게 재계산 (비효율적이지만 안전)
-            # 실제로는 step_data에 저장된 것을 사용해야 함
+        trajectory = controller.get_ppo_trajectory()
 
         # 총 보상 계산
         total_reward = sum(trajectory['rewards']) if trajectory['rewards'] else 0.0
@@ -297,29 +282,28 @@ class PPOTrainer:
         actions = trajectory['actions']
         rewards = trajectory['rewards']
         dones = trajectory['dones']
+        old_log_probs = trajectory['log_probs']
+        values = trajectory['values']
 
-        # 현재 정책으로 log_probs, values 재계산
-        states_tensor = torch.FloatTensor(states).to(self.agent.device)
-        actions_tensor = torch.LongTensor(actions).to(self.agent.device)
-
-        with torch.no_grad():
-            old_log_probs, values, _ = self.agent.evaluate_actions(states_tensor, actions_tensor)
-            old_log_probs = old_log_probs.cpu().numpy()
-            values = values.cpu().numpy().tolist()
-
-            # 마지막 상태의 가치 계산
-            if len(states) > 0:
-                last_state = torch.FloatTensor(states[-1]).unsqueeze(0).to(self.agent.device)
+        # 마지막 상태의 가치 계산 (부트스트래핑용)
+        if len(states) > 0:
+            import numpy as np
+            last_state = torch.FloatTensor(np.array(states[-1])).unsqueeze(0).to(self.agent.device)
+            with torch.no_grad():
                 next_value = self.agent.critic(last_state).item()
-            else:
-                next_value = 0.0
+        else:
+            next_value = 0.0
 
         # GAE 계산
         advantages, returns = self.agent.compute_gae(rewards, values, dones, next_value)
 
+        # states를 numpy array로 변환 (경고 방지)
+        import numpy as np
+        states_array = np.array(states, dtype=np.float32)
+
         # PPO 업데이트
         loss = self.agent.update(
-            states=states,
+            states=states_array,
             actions=actions,
             old_log_probs=old_log_probs,
             returns=returns,
