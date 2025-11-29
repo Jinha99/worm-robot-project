@@ -246,9 +246,13 @@ class Environment(AtomicDEVS):
         return observations
     
     def _calculate_rewards(self):
-        """각 로봇의 보상 계산 (개선된 버전 - 충돌 회피 및 무효 행동 페널티 포함)"""
+        """각 로봇의 보상 계산 (개선된 버전 - 시간 비용, 충돌 회피 및 무효 행동 페널티 포함)"""
         for rid, pos_data in self.state.robot_positions.items():
             reward = 0.0
+
+            # 0. 시간(step) 비용 - 매 스텝마다 작은 페널티
+            # 빠른 목표 달성을 장려
+            reward -= 0.1
 
             # 현재 위치
             tail = pos_data["tail"]

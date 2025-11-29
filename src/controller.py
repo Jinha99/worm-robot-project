@@ -12,6 +12,7 @@ from config import (
     ACTION_MOVE,
     ACTION_ROTATE_CW,
     ACTION_ROTATE_CCW,
+    ACTION_STOP,
 )
 
 
@@ -29,6 +30,7 @@ class ControllerState:
         self.phase = "IDLE"  # 상태: IDLE, DECIDING
         self.prev_observations = {}  # 이전 스텝의 관찰 데이터
         self.current_actions = {}    # 현재 스텝에서 선택한 행동 {robot_id: action_idx}
+        self.last_actions = {}       # 이전 스텝의 행동 {robot_id: action_idx} - 회전 반복 방지용
 
     def __str__(self):
         return (
@@ -133,6 +135,8 @@ class Controller(AtomicDEVS):
         """출력 함수 - 각 로봇에 행동 명령 전송"""
         if self.state.phase == "DECIDING":
             actions = {}
+            # 이전 스텝의 행동 저장 (회전 반복 방지용)
+            self.state.last_actions = self.state.current_actions.copy()
             self.state.current_actions = {}  # 현재 스텝의 행동 초기화
 
             for rid in range(self.num_robots):
@@ -152,6 +156,7 @@ class Controller(AtomicDEVS):
         2. head가 센터(0,0)로 향하는 회전 우대
         3. 목표 방향 기준 회전 확률 조정
         4. 격자 밖으로 나가는 forward 금지
+        5. 조건부 행동: 위험 시 회전, 목표 방향 있으면 전진, 아니면 STOP
 
         Args:
             rid: 로봇 ID
@@ -160,14 +165,15 @@ class Controller(AtomicDEVS):
         Returns:
             tuple: (action_dict, action_idx)
                 - action_dict: {"type": action_type} - 로봇에 전송할 행동
-                - action_idx: int (0-2) - 학습에 사용할 행동 인덱스
+                - action_idx: int (0-3) - 학습에 사용할 행동 인덱스
+                    0: MOVE, 1: ROTATE_CW, 2: ROTATE_CCW, 3: STOP
         """
-        action_types = [ACTION_MOVE, ACTION_ROTATE_CW, ACTION_ROTATE_CCW]
+        action_types = [ACTION_MOVE, ACTION_ROTATE_CW, ACTION_ROTATE_CCW, ACTION_STOP]
 
         if self.rl_agent is not None and hasattr(self.rl_agent, 'select_action'):
             # PPO 에이전트 연동
             state = self._observation_to_state(obs)
-            action_mask = self._compute_action_mask(obs)
+            action_mask = self._compute_action_mask(obs, rid=rid)
 
             # PPO 에이전트가 확률 분포를 사용하여 행동 선택
             action_idx, log_prob, value = self.rl_agent.select_action(state, action_mask)
@@ -229,7 +235,7 @@ class Controller(AtomicDEVS):
 
         return ({"type": action_types[action_idx]}, action_idx)
 
-    def _compute_action_mask(self, obs):
+    def _compute_action_mask(self, obs, rid=None):
         """
         PPO용 행동 확률 마스크 계산
 
@@ -240,12 +246,15 @@ class Controller(AtomicDEVS):
         2. head가 센터(0,0)로 향하는 회전 우대
         3. 목표 방향 기준 회전 확률 조정
         4. 격자 밖으로 나가는 forward 금지
+        5. 조건부 행동: 위험 시 회전 우대, 목표 방향 있으면 전진, 아니면 STOP
+        6. 목표 근처에서 회전 반복 방지
 
         Args:
             obs: 관찰 데이터
+            rid: 로봇 ID (최근 행동 확인용)
 
         Returns:
-            list: [forward_prob, cw_prob, ccw_prob] - 각 행동의 확률 가중치
+            list: [forward_prob, cw_prob, ccw_prob, stop_prob] - 각 행동의 확률 가중치
         """
         from config import DIRECTIONS, GRID_SIZE
 
@@ -259,6 +268,7 @@ class Controller(AtomicDEVS):
         forward_prob = 1.0
         cw_prob = 1.0
         ccw_prob = 1.0
+        stop_prob = 1.0
 
         # 현재 방향 벡터
         direction_vec = DIRECTIONS[own_direction]
@@ -359,8 +369,37 @@ class Controller(AtomicDEVS):
                 # 목표 방향으로 향하고 있으면 전진 우대
                 forward_prob *= 1.5
 
+        # 정책 5: 조건부 행동 로직
+        # 목표까지 거리 계산
+        distance_to_goal = abs(to_goal_vec[0]) + abs(to_goal_vec[1])
+
+        # 위험하거나 탐지된 로봇이 있으면 → 회전 우대, STOP 억제
+        if detected_robots or forward_prob < 0.5:
+            cw_prob *= 1.5
+            ccw_prob *= 1.5
+            stop_prob *= 0.3
+        # 목표 방향이 정해져 있고 거리가 멀면 → 전진 우대, STOP 억제
+        elif distance_to_goal > 1:
+            forward_prob *= 1.3
+            stop_prob *= 0.5
+        # 거리가 매우 가까우면 → STOP 우대 (목표 주변에서 대기)
+        else:
+            stop_prob *= 2.0
+            forward_prob *= 0.7
+
+        # 정책 6: 목표 근처에서 회전 반복 방지
+        if distance_to_goal <= 2 and rid is not None:
+            # 최근 행동이 회전이었는지 확인
+            last_action = self.state.last_actions.get(rid, None)
+            if last_action in [1, 2]:  # CW 또는 CCW
+                # 회전 확률 감소, 전진/STOP 우대
+                cw_prob *= 0.4
+                ccw_prob *= 0.4
+                forward_prob *= 1.5
+                stop_prob *= 1.5
+
         # 정규화는 PPO 에이전트에서 수행
-        return [forward_prob, cw_prob, ccw_prob]
+        return [forward_prob, cw_prob, ccw_prob, stop_prob]
 
     def _select_smart_rotation(self, obs):
         """

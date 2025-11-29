@@ -30,6 +30,7 @@ DIR_NAMES = ["동", "남", "서", "북"]
 ACTION_MOVE = "move"              # 전진 (5초)
 ACTION_ROTATE_CW = "rotate_cw"    # 시계방향 회전 (3초)
 ACTION_ROTATE_CCW = "rotate_ccw"  # 반시계방향 회전 (3초)
+ACTION_STOP = "stop"              # 정지 (1초)
 
 
 # ========================================
@@ -40,6 +41,7 @@ ACTION_TIMES = {
     ACTION_MOVE: 5,
     ACTION_ROTATE_CW: 3,
     ACTION_ROTATE_CCW: 3,
+    ACTION_STOP: 1,
 }
 
 

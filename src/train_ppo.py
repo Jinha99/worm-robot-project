@@ -34,7 +34,7 @@ def main():
 
     # 하이퍼파라미터
     STATE_DIM = 13  # controller._observation_to_state에서 정의한 차원
-    ACTION_DIM = 3  # 전진, 시계방향, 반시계방향
+    ACTION_DIM = 4  # 전진, 시계방향, 반시계방향, 정지
 
     # PPO 에이전트 생성
     agent = PPOAgent(

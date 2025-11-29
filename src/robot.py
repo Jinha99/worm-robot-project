@@ -12,6 +12,7 @@ from config import (
     ACTION_MOVE,
     ACTION_ROTATE_CW,
     ACTION_ROTATE_CCW,
+    ACTION_STOP,
     ACTION_TIMES,
 )
 from utils import add_pos, in_bounds
@@ -132,6 +133,10 @@ class Robot(AtomicDEVS):
                     self.state.direction = new_direction
                     self.state.head_pos = new_head
                 # else: 격자를 벗어나면 회전하지 않음
+
+            elif action_type == ACTION_STOP:
+                # 정지: 위치 변경 없음 (대기)
+                pass
 
             # EXECUTING 상태로 전환 (행동이 유효하든 아니든 시간은 소모)
             self.state.phase = "EXECUTING"
