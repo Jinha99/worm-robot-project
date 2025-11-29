@@ -71,8 +71,18 @@ class Controller(AtomicDEVS):
         self.action_out = [self.addOutPort(f"action{i}_out") for i in range(num_robots)]
 
         # 스텝별 경험 데이터 저장 (학습용)
-        self.step_experiences = []  # [(state, action, reward, next_state, done), ...]
+        self.step_experiences = []  # [(state, action, reward, next_state, done), ...] - DQN용
         self.current_rewards = {}   # 현재 스텝의 보상
+
+        # PPO용 trajectory 데이터
+        self.ppo_trajectory = {
+            'states': [],
+            'actions': [],
+            'log_probs': [],
+            'values': [],
+            'rewards': [],
+            'dones': []
+        }
 
     def timeAdvance(self):
         """시간 진행 함수"""
@@ -445,7 +455,7 @@ class Controller(AtomicDEVS):
 
     def get_step_experiences(self):
         """
-        현재까지 수집된 스텝 경험 데이터를 반환하고 초기화
+        현재까지 수집된 스텝 경험 데이터를 반환하고 초기화 (DQN용)
 
         Returns:
             list: [(state, action, reward, next_state, done), ...]
@@ -453,6 +463,33 @@ class Controller(AtomicDEVS):
         experiences = self.step_experiences.copy()
         self.step_experiences = []
         return experiences
+
+    def get_ppo_trajectory(self):
+        """
+        PPO trajectory 데이터 가져오기 (PPO Trainer에서 호출)
+
+        Returns:
+            dict: {'states': [...], 'actions': [...], 'log_probs': [...],
+                   'values': [...], 'rewards': [...], 'dones': [...]}
+        """
+        trajectory = {
+            'states': self.ppo_trajectory['states'].copy(),
+            'actions': self.ppo_trajectory['actions'].copy(),
+            'log_probs': self.ppo_trajectory['log_probs'].copy(),
+            'values': self.ppo_trajectory['values'].copy(),
+            'rewards': self.ppo_trajectory['rewards'].copy(),
+            'dones': self.ppo_trajectory['dones'].copy()
+        }
+        # 초기화
+        self.ppo_trajectory = {
+            'states': [],
+            'actions': [],
+            'log_probs': [],
+            'values': [],
+            'rewards': [],
+            'dones': []
+        }
+        return trajectory
 
     def _collect_experiences(self, rewards, env_status):
         """
@@ -486,6 +523,16 @@ class Controller(AtomicDEVS):
             # 종료 여부
             done = (env_status != STATUS_RUNNING)
 
-            # 경험 저장
+            # DQN용 경험 저장
             self.step_experiences.append((prev_state, action, reward, next_state, done))
+
+            # PPO용 trajectory 저장
+            if hasattr(self, 'step_data') and rid in self.step_data:
+                step_info = self.step_data[rid]
+                self.ppo_trajectory['states'].append(step_info['state'])
+                self.ppo_trajectory['actions'].append(step_info['action'])
+                self.ppo_trajectory['log_probs'].append(step_info['log_prob'])
+                self.ppo_trajectory['values'].append(step_info['value'])
+                self.ppo_trajectory['rewards'].append(reward)
+                self.ppo_trajectory['dones'].append(done)
 

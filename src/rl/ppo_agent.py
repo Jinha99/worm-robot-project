@@ -227,8 +227,13 @@ class PPOAgent:
         returns = returns.to(self.device)
         advantages = advantages.to(self.device)
 
-        # 어드밴티지 정규화
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        # 어드밴티지 정규화 (std가 0이 아닐 때만)
+        adv_std = advantages.std()
+        if adv_std > 1e-8:
+            advantages = (advantages - advantages.mean()) / (adv_std + 1e-8)
+        else:
+            # 모든 advantage가 같으면 정규화하지 않음
+            advantages = advantages - advantages.mean()
 
         total_loss = 0
         num_updates = 0
