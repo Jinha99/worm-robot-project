@@ -20,18 +20,8 @@ def create_system(rl_agent=None):
     Returns:
         WormRobotSystem: 초기화된 시스템
     """
-    # 커리큘럼 학습을 위한 랜덤 로봇 설정 생성
-    robot_configs = config.generate_random_robot_configs(
-        num_robots=config.NUM_ROBOTS,
-        min_distance=config.MIN_ROBOT_DISTANCE
-    )
-
-    system = WormRobotSystem(
-        robot_configs=robot_configs,
-        grid_size=config.GRID_SIZE,
-        sensor_range=config.SENSOR_RANGE,
-        rl_agent=rl_agent
-    )
+    # 시스템 생성 (내부에서 자동으로 랜덤 초기 위치 생성)
+    system = WormRobotSystem(rl_agent=rl_agent)
 
     return system
 
