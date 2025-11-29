@@ -192,11 +192,11 @@ class Environment(AtomicDEVS):
         # 각 로봇의 성공 여부 확인
         success_count = 0
         for rid, pos_data in self.state.robot_positions.items():
-            # 뒷발이 중앙 (0,0)에 있고, 앞발이 목적지에 있으면 성공
+            # 앞발이 중앙 (0,0)에 있고, 뒷발이 목적지에 있으면 성공
             goal_position = self.robot_goals.get(rid)
-            if (pos_data["tail"] == (0, 0) and
+            if (pos_data["head"] == (0, 0) and
                 goal_position is not None and
-                pos_data["head"] == goal_position):
+                pos_data["tail"] == goal_position):
                 self.state.robot_success[rid] = True
                 success_count += 1
             else:
@@ -253,12 +253,12 @@ class Environment(AtomicDEVS):
             # 현재 위치
             tail = pos_data["tail"]
             head = pos_data["head"]
-            goal_head = self.robot_goals.get(rid, (0, 0))
+            goal_tail = self.robot_goals.get(rid, (0, 0))
 
-            # 목표까지 거리
-            tail_dist = abs(tail[0]) + abs(tail[1])
-            head_dist = abs(head[0] - goal_head[0]) + abs(head[1] - goal_head[1])
-            total_dist = tail_dist + head_dist
+            # 목표까지 거리 (앞발은 (0,0), 뒷발은 목표)
+            head_dist = abs(head[0]) + abs(head[1])
+            tail_dist = abs(tail[0] - goal_tail[0]) + abs(tail[1] - goal_tail[1])
+            total_dist = head_dist + tail_dist
 
             # 1. 거리 기반 보상 (정규화: 가까울수록 높은 보상)
             # 최대 거리 12 (7x7 격자 대각선) → -1 ~ +1로 정규화
@@ -301,20 +301,20 @@ class Environment(AtomicDEVS):
                     reward -= 5.0
 
             # 4. 중간 목표 달성 보너스
-            tail_at_center = (tail == (0, 0))
-            head_at_goal = (head == goal_head)
+            head_at_center = (head == (0, 0))
+            tail_at_goal = (tail == goal_tail)
 
-            if tail_at_center and head_at_goal:
+            if head_at_center and tail_at_goal:
                 # 완전 성공! (최고 보상)
                 reward += 100.0
                 if rid not in self.state.robot_success or not self.state.robot_success.get(rid, False):
                     # 처음 성공한 경우 추가 보너스
                     reward += 50.0
-            elif tail_at_center:
-                # 뒷발만 중앙에 도달
+            elif head_at_center:
+                # 앞발만 중앙에 도달
                 reward += 30.0
-            elif head_at_goal:
-                # 앞발만 목표에 도달
+            elif tail_at_goal:
+                # 뒷발만 목표에 도달
                 reward += 30.0
 
             # 5. 매우 가까운 거리 보너스 (거의 다 왔음!)
