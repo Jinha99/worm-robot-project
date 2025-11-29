@@ -32,13 +32,13 @@ def create_system(rl_agent=None):
 def main():
     """메인 함수"""
     print("=" * 60)
-    print("Worm Robot DQN 학습")
+    print("Worm Robot DQN 학습 (커리큘럼 학습)")
     print("=" * 60)
-    
+
     # 하이퍼파라미터
     STATE_DIM = 13  # controller._observation_to_state에서 정의한 차원
     ACTION_DIM = 3  # 전진, 시계방향, 반시계방향
-    
+
     # DQN 에이전트 생성
     agent = DQNAgent(
         state_dim=STATE_DIM,
@@ -51,18 +51,35 @@ def main():
         use_target_net=False,
         device="cpu"
     )
-    
+
+    # 커리큘럼 학습 단계 정의
+    curriculum_stages = [
+        {
+            "name": "Stage1_1Robot",
+            "num_robots": 1,
+            "min_distance": 0
+        },
+        {
+            "name": "Stage2_2Robots",
+            "num_robots": 2,
+            "min_distance": 6  # 로봇들을 멀리 배치
+        }
+    ]
+
     # 트레이너 생성
     trainer = DQNTrainer(
         agent=agent,
         create_system_fn=create_system,
-        num_episodes=5000,              # 개선된 보상으로 재학습
-        termination_time=200,     # 시뮬레이션 최대 시간 (충분한 학습 시간 제공)
+        num_episodes=5000,              # 전체 에피소드 수
+        termination_time=200,           # 시뮬레이션 최대 시간
         batch_size=32,
         buffer_size=10000,
-        log_interval=10,          # 10 에피소드마다 로그 출력
-        save_interval=50,         # 50 에피소드마다 모델 저장
-        model_path="outputs/dqn_worm_robot.pth"
+        log_interval=10,                # 10 에피소드마다 로그 출력
+        save_interval=50,               # 50 에피소드마다 모델 저장
+        model_path="outputs/dqn_worm_robot.pth",
+        curriculum_stages=curriculum_stages,  # 커리큘럼 단계 전달
+        progression_threshold=0.7,      # 70% 성공률로 다음 단계 진행
+        progression_window=100          # 최근 100 에피소드 기준
     )
     
     # 학습 실행

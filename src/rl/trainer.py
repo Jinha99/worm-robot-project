@@ -22,8 +22,9 @@ except ImportError:
 class DQNTrainer:
     """
     DQN 학습 루프를 관리하는 클래스
-    
+
     주의: 현재는 에피소드 전체를 실행 후 보상 계산하는 간단한 버전
+    커리큘럼 학습 지원 (단계적 난이도 증가)
     """
 
     def __init__(
@@ -38,7 +39,10 @@ class DQNTrainer:
         save_interval=100,
         model_path="models/dqn_worm_robot.pth",
         use_tensorboard=True,
-        tensorboard_dir="runs/worm_robot_dqn"
+        tensorboard_dir="runs/worm_robot_dqn",
+        curriculum_stages=None,
+        progression_threshold=0.7,
+        progression_window=100
     ):
         """
         Args:
@@ -53,6 +57,11 @@ class DQNTrainer:
             model_path: 모델 저장 경로
             use_tensorboard: TensorBoard 사용 여부
             tensorboard_dir: TensorBoard 로그 디렉토리
+            curriculum_stages: 커리큘럼 학습 단계 리스트 (None이면 단일 단계)
+                               예: [{"name": "Stage1", "num_robots": 1, "min_distance": 0},
+                                    {"name": "Stage2", "num_robots": 2, "min_distance": 6}]
+            progression_threshold: 다음 단계로 진행하기 위한 성공률 임계값 (0.0~1.0)
+            progression_window: 성공률 계산에 사용할 최근 에피소드 수
         """
         self.agent = agent
         self.create_system_fn = create_system_fn
@@ -62,22 +71,30 @@ class DQNTrainer:
         self.log_interval = log_interval
         self.save_interval = save_interval
         self.model_path = model_path
-        
+
         # Replay Buffer
         self.replay_buffer = ReplayBuffer(capacity=buffer_size)
-        
+
+        # 커리큘럼 학습 설정
+        self.curriculum_stages = curriculum_stages
+        self.progression_threshold = progression_threshold
+        self.progression_window = progression_window
+        self.current_stage_idx = 0
+        self.stage_start_episode = 0
+
         # TensorBoard
         self.writer = None
         if use_tensorboard and TENSORBOARD_AVAILABLE:
             self.writer = SummaryWriter(tensorboard_dir)
             print(f"📊 TensorBoard 로깅 활성화: {tensorboard_dir}")
             print(f"   실행: tensorboard --logdir=runs")
-        
+
         # 통계
         self.stats = {
             "episode_rewards": [],
             "episode_steps": [],
             "episode_losses": [],
+            "episode_results": [],  # 각 에피소드 결과 (STATUS_WIN, STATUS_PARTIAL_WIN, etc.)
             "success_count": 0,
             "partial_success_count": 0,
             "fail_count": 0,
@@ -85,7 +102,7 @@ class DQNTrainer:
         }
 
     def train(self):
-        """학습 루프 실행"""
+        """학습 루프 실행 (커리큘럼 학습 지원)"""
         print("=" * 60)
         print("DQN 학습 시작")
         print("=" * 60)
@@ -93,6 +110,21 @@ class DQNTrainer:
         print(f"시뮬레이션 시간: {self.termination_time}초")
         print(f"배치 크기: {self.batch_size}")
         print(f"초기 Epsilon: {self.agent.epsilon:.3f}")
+
+        # 커리큘럼 학습 정보 출력
+        if self.curriculum_stages:
+            print(f"\n📚 커리큘럼 학습 활성화:")
+            for i, stage in enumerate(self.curriculum_stages):
+                print(f"   {i+1}. {stage['name']}: {stage['num_robots']}개 로봇, 최소거리 {stage['min_distance']}")
+            print(f"   진행 조건: 성공률 {self.progression_threshold*100:.0f}% (최근 {self.progression_window} 에피소드)")
+
+            # 첫 번째 단계 설정
+            import config
+            first_stage = self.curriculum_stages[0]
+            config.NUM_ROBOTS = first_stage["num_robots"]
+            config.MIN_ROBOT_DISTANCE = first_stage["min_distance"]
+            print(f"\n🚀 시작 단계: {first_stage['name']}")
+
         print("=" * 60)
         
         for episode in range(self.num_episodes):
@@ -101,6 +133,7 @@ class DQNTrainer:
             # 통계 업데이트
             self.stats["episode_rewards"].append(episode_reward)
             self.stats["episode_steps"].append(episode_steps)
+            self.stats["episode_results"].append(episode_status)  # 에피소드 결과 저장
 
             if episode_status == STATUS_WIN:
                 self.stats["success_count"] += 1
@@ -128,7 +161,11 @@ class DQNTrainer:
             
             # Epsilon 감소
             self.agent.update_epsilon()
-            
+
+            # 커리큘럼 단계 진행 체크
+            if self._check_stage_progression(episode):
+                self._progress_to_next_stage(episode)
+
             # TensorBoard 로깅
             if self.writer is not None:
                 self.writer.add_scalar('Reward/episode', episode_reward, episode)
@@ -260,15 +297,15 @@ class DQNTrainer:
         print("\n" + "=" * 60)
         print(f"평가 시작 ({num_episodes} 에피소드)")
         print("=" * 60)
-        
+
         success_count = 0
         total_rewards = []
         total_steps = []
-        
+
         # 원래 epsilon 저장
         original_epsilon = self.agent.epsilon
         self.agent.epsilon = 0.0  # 평가 시에는 탐험 안 함
-        
+
         for episode in range(num_episodes):
             reward, steps, status, _ = self._run_episode()
             total_rewards.append(reward)
@@ -276,21 +313,91 @@ class DQNTrainer:
 
             if status == STATUS_WIN:
                 success_count += 1
-        
+
         # Epsilon 복원
         self.agent.epsilon = original_epsilon
-        
+
         avg_reward = sum(total_rewards) / num_episodes
         avg_steps = sum(total_steps) / num_episodes
         success_rate = success_count / num_episodes * 100
-        
+
         print(f"평균 보상: {avg_reward:.2f}")
         print(f"평균 스텝: {avg_steps:.1f}")
         print(f"성공률: {success_rate:.1f}%")
         print("=" * 60)
-        
+
         return {
             "success_rate": success_rate,
             "avg_reward": avg_reward,
             "avg_steps": avg_steps
         }
+
+    def _check_stage_progression(self, episode):
+        """
+        현재 단계에서 다음 단계로 진행할 준비가 되었는지 확인
+
+        Args:
+            episode: 현재 에피소드 번호
+
+        Returns:
+            bool: 다음 단계로 진행 가능 여부
+        """
+        # 커리큘럼 학습이 설정되지 않았거나 마지막 단계인 경우
+        if not self.curriculum_stages or self.current_stage_idx >= len(self.curriculum_stages) - 1:
+            return False
+
+        # 충분한 에피소드가 진행되었는지 확인 (최소 window 크기만큼)
+        stage_episodes = episode - self.stage_start_episode
+        if stage_episodes < self.progression_window:
+            return False
+
+        # 최근 progression_window 에피소드의 성공률 계산
+        recent_results = self.stats["episode_results"][-self.progression_window:]
+
+        # 성공 및 부분 성공 카운트
+        success_count = sum(1 for r in recent_results if r == STATUS_WIN)
+        partial_success_count = sum(1 for r in recent_results if r == STATUS_PARTIAL_WIN)
+
+        # 성공률 계산 (부분 성공은 0.5로 계산)
+        combined_success_rate = (success_count + partial_success_count * 0.5) / len(recent_results)
+
+        if combined_success_rate >= self.progression_threshold:
+            return True
+
+        return False
+
+    def _progress_to_next_stage(self, episode):
+        """
+        다음 커리큘럼 단계로 진행
+
+        Args:
+            episode: 현재 에피소드 번호
+        """
+        # 현재 단계 모델 저장
+        current_stage = self.curriculum_stages[self.current_stage_idx]
+        stage_model_path = self.model_path.replace(".pth", f"_{current_stage['name']}.pth")
+        os.makedirs(os.path.dirname(stage_model_path) if os.path.dirname(stage_model_path) else "outputs", exist_ok=True)
+        self.agent.save(stage_model_path)
+
+        print("\n" + "=" * 60)
+        print(f"🎓 커리큘럼 진행: {current_stage['name']} 완료!")
+        print(f"   성공률: {self.stats['success_count'] / len(self.stats['episode_rewards']) * 100:.1f}%")
+        print(f"   모델 저장: {stage_model_path}")
+
+        # 다음 단계로 이동
+        self.current_stage_idx += 1
+        next_stage = self.curriculum_stages[self.current_stage_idx]
+        self.stage_start_episode = episode
+
+        # config 업데이트
+        import config
+        config.NUM_ROBOTS = next_stage["num_robots"]
+        config.MIN_ROBOT_DISTANCE = next_stage["min_distance"]
+
+        # 통계 리셋 (선택적)
+        # self.stats = {...}  # 리셋하지 않고 누적
+
+        print(f"🚀 다음 단계 시작: {next_stage['name']}")
+        print(f"   로봇 수: {next_stage['num_robots']}")
+        print(f"   최소 거리: {next_stage['min_distance']}")
+        print("=" * 60 + "\n")
