@@ -135,12 +135,13 @@ class Controller(AtomicDEVS):
 
     def _select_action(self, rid, obs):
         """
-        행동 선택 정책 - 강화학습 연동 지점 + 충돌 회피 + 스마트 회전
+        행동 선택 정책 - PPO 에이전트 연동 + 정책 마스킹
 
-        정책:
-        1. 앞에 로봇이 있으면 회전만 허용
-        2. 목표 방향 기반 회전 방향 선택
-        3. RL 에이전트가 있으면 에이전트 사용
+        정책 (PPO용 확률 조정):
+        1. 센서 범위에 다른 로봇 탐지 시 충돌 회피
+        2. head가 센터(0,0)로 향하는 회전 우대
+        3. 목표 방향 기준 회전 확률 조정
+        4. 격자 밖으로 나가는 forward 금지
 
         Args:
             rid: 로봇 ID
@@ -153,31 +154,46 @@ class Controller(AtomicDEVS):
         """
         action_types = [ACTION_MOVE, ACTION_ROTATE_CW, ACTION_ROTATE_CCW]
 
-        # 1. 앞에 로봇이 있는지 확인
-        own_head = obs["own_head"]
-        own_direction = obs["own_direction"]
-        detected_robots = obs["detected_robots"]
+        if self.rl_agent is not None and hasattr(self.rl_agent, 'select_action'):
+            # PPO 에이전트 연동
+            state = self._observation_to_state(obs)
+            action_mask = self._compute_action_mask(obs)
 
-        # 현재 방향의 벡터
-        from config import DIRECTIONS
-        direction_vec = DIRECTIONS[own_direction]
-        front_position = (own_head[0] + direction_vec[0], own_head[1] + direction_vec[1])
+            # PPO 에이전트가 확률 분포를 사용하여 행동 선택
+            action_idx, log_prob, value = self.rl_agent.select_action(state, action_mask)
 
-        # 앞에 다른 로봇이 있는지 체크
-        robot_in_front = False
-        for robot in detected_robots:
-            if robot["head"] == front_position or robot["tail"] == front_position:
-                robot_in_front = True
-                break
+            # 현재 스텝의 정보 저장 (PPO 학습용)
+            if not hasattr(self, 'step_data'):
+                self.step_data = {}
+            self.step_data[rid] = {
+                'state': state,
+                'action': action_idx,
+                'log_prob': log_prob,
+                'value': value
+            }
 
-        if self.rl_agent is not None:
-            # RL 에이전트 연동
+            return ({"type": action_types[action_idx]}, action_idx)
+        elif self.rl_agent is not None:
+            # DQN 에이전트 (기존 방식)
             state = self._observation_to_state(obs)
             action_idx = self.rl_agent.get_action(state, training=True)
 
-            # 앞에 로봇이 있으면 MOVE 금지
+            # 기본 충돌 회피
+            own_head = obs["own_head"]
+            own_direction = obs["own_direction"]
+            detected_robots = obs["detected_robots"]
+
+            from config import DIRECTIONS
+            direction_vec = DIRECTIONS[own_direction]
+            front_position = (own_head[0] + direction_vec[0], own_head[1] + direction_vec[1])
+
+            robot_in_front = False
+            for robot in detected_robots:
+                if robot["head"] == front_position or robot["tail"] == front_position:
+                    robot_in_front = True
+                    break
+
             if robot_in_front and action_idx == 0:
-                # MOVE 대신 스마트 회전 선택
                 action_idx = self._select_smart_rotation(obs)
 
             return ({"type": action_types[action_idx]}, action_idx)
@@ -202,6 +218,139 @@ class Controller(AtomicDEVS):
                 action_idx = random.choice([0, 1, 2])
 
         return ({"type": action_types[action_idx]}, action_idx)
+
+    def _compute_action_mask(self, obs):
+        """
+        PPO용 행동 확률 마스크 계산
+
+        사용자 정책:
+        1. 센서 범위에 다른 로봇 탐지 시:
+           - head 앞쪽에 있으면: 전진 확률 낮추고, 회전은 탐지 로봇으로부터 먼 쪽으로
+           - tail 쪽에 있으면: 전진 허용
+        2. head가 센터(0,0)로 향하는 회전 우대
+        3. 목표 방향 기준 회전 확률 조정
+        4. 격자 밖으로 나가는 forward 금지
+
+        Args:
+            obs: 관찰 데이터
+
+        Returns:
+            list: [forward_prob, cw_prob, ccw_prob] - 각 행동의 확률 가중치
+        """
+        from config import DIRECTIONS, GRID_SIZE
+
+        own_head = obs["own_head"]
+        own_tail = obs["own_tail"]
+        own_direction = obs["own_direction"]
+        detected_robots = obs["detected_robots"]
+        goal_position = obs["goal_position"]
+
+        # 기본 확률 (모두 동일)
+        forward_prob = 1.0
+        cw_prob = 1.0
+        ccw_prob = 1.0
+
+        # 현재 방향 벡터
+        direction_vec = DIRECTIONS[own_direction]
+
+        # 정책 4: 격자 밖으로 나가는 forward 금지
+        next_head = (own_head[0] + direction_vec[0], own_head[1] + direction_vec[1])
+        if not (0 <= next_head[0] < GRID_SIZE and 0 <= next_head[1] < GRID_SIZE):
+            forward_prob = 0.0  # 완전 금지
+
+        # 정책 1: 센서 범위에 다른 로봇 탐지 시 충돌 회피
+        if detected_robots:
+            front_position = next_head
+
+            # 각 방향별 로봇 위치 분석
+            robot_in_front = False
+            robot_in_back = False
+            robot_positions = []
+
+            for robot in detected_robots:
+                robot_positions.extend([robot["head"], robot["tail"]])
+
+                # 정면에 로봇이 있는지
+                if robot["head"] == front_position or robot["tail"] == front_position:
+                    robot_in_front = True
+
+                # 후방에 로봇이 있는지 (tail 방향)
+                back_vec = (-direction_vec[0], -direction_vec[1])
+                back_position = (own_head[0] + back_vec[0], own_head[1] + back_vec[1])
+                if robot["head"] == back_position or robot["tail"] == back_position:
+                    robot_in_back = True
+
+            # head 앞쪽에 로봇이 있으면 전진 확률 대폭 감소, 회전 확률 증가
+            if robot_in_front:
+                forward_prob *= 0.1  # 전진 확률 90% 감소
+
+                # 회전 방향 선택: 탐지된 로봇으로부터 먼 방향으로
+                # 시계 방향으로 회전했을 때와 반시계 방향으로 회전했을 때를 계산
+                cw_direction_idx = (own_direction + 1) % 4
+                ccw_direction_idx = (own_direction - 1) % 4
+
+                cw_vec = DIRECTIONS[cw_direction_idx]
+                ccw_vec = DIRECTIONS[ccw_direction_idx]
+
+                cw_next = (own_head[0] + cw_vec[0], own_head[1] + cw_vec[1])
+                ccw_next = (own_head[0] + ccw_vec[0], own_head[1] + ccw_vec[1])
+
+                # 각 회전 방향에 로봇이 있는지 확인
+                cw_blocked = cw_next in robot_positions
+                ccw_blocked = ccw_next in robot_positions
+
+                if cw_blocked and not ccw_blocked:
+                    cw_prob *= 0.3  # CW 쪽에 로봇 있으면 CCW 우대
+                    ccw_prob *= 2.0
+                elif ccw_blocked and not cw_blocked:
+                    ccw_prob *= 0.3  # CCW 쪽에 로봇 있으면 CW 우대
+                    cw_prob *= 2.0
+                else:
+                    # 둘 다 막혔거나 둘 다 비었으면 회전 확률 증가
+                    cw_prob *= 1.5
+                    ccw_prob *= 1.5
+
+            # tail 쪽에만 로봇이 있으면 전진 허용 (오히려 권장)
+            if robot_in_back and not robot_in_front:
+                forward_prob *= 1.3  # 전진 확률 증가
+
+        # 정책 2: head가 센터(0,0)로 향하는 회전 우대
+        center = (0, 0)
+        to_center_vec = (center[0] - own_head[0], center[1] - own_head[1])
+
+        if to_center_vec != (0, 0):  # 이미 센터에 있지 않은 경우
+            # 외적으로 센터로 향하는 회전 방향 계산
+            cross = direction_vec[0] * to_center_vec[1] - direction_vec[1] * to_center_vec[0]
+
+            if cross > 0:
+                # 센터가 왼쪽 → CCW가 센터로 향함
+                ccw_prob *= 1.5
+            elif cross < 0:
+                # 센터가 오른쪽 → CW가 센터로 향함
+                cw_prob *= 1.5
+
+        # 정책 3: 목표 방향 기준 회전 확률 조정
+        to_goal_vec = (goal_position[0] - own_head[0], goal_position[1] - own_head[1])
+
+        if to_goal_vec != (0, 0):
+            # 현재 방향과 목표 방향의 외적
+            cross_goal = direction_vec[0] * to_goal_vec[1] - direction_vec[1] * to_goal_vec[0]
+
+            if cross_goal > 0:
+                # 목표가 왼쪽 → CCW 우대
+                ccw_prob *= 1.8
+            elif cross_goal < 0:
+                # 목표가 오른쪽 → CW 우대
+                cw_prob *= 1.8
+
+            # 목표와 현재 방향이 얼마나 일치하는지 (내적)
+            dot = direction_vec[0] * to_goal_vec[0] + direction_vec[1] * to_goal_vec[1]
+            if dot > 0:
+                # 목표 방향으로 향하고 있으면 전진 우대
+                forward_prob *= 1.5
+
+        # 정규화는 PPO 에이전트에서 수행
+        return [forward_prob, cw_prob, ccw_prob]
 
     def _select_smart_rotation(self, obs):
         """
