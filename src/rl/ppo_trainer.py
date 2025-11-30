@@ -265,7 +265,7 @@ class PPOTrainer:
 
     def _update_policy(self, trajectory):
         """
-        PPO 정책 업데이트
+        PPO/MAPPO 정책 업데이트
 
         Args:
             trajectory: 에피소드 trajectory
@@ -277,8 +277,10 @@ class PPOTrainer:
             return 0.0
 
         import torch
+        import numpy as np
 
         states = trajectory['states']
+        global_states = trajectory.get('global_states', None)  # MAPPO용
         actions = trajectory['actions']
         rewards = trajectory['rewards']
         dones = trajectory['dones']
@@ -287,10 +289,15 @@ class PPOTrainer:
 
         # 마지막 상태의 가치 계산 (부트스트래핑용)
         if len(states) > 0:
-            import numpy as np
-            last_state = torch.FloatTensor(np.array(states[-1])).unsqueeze(0).to(self.agent.device)
-            with torch.no_grad():
-                next_value = self.agent.critic(last_state).item()
+            # MAPPO: global state 사용, PPO: local state만 사용
+            if global_states is not None and len(global_states) > 0:
+                last_global_state = torch.FloatTensor(np.array(global_states[-1])).unsqueeze(0).to(self.agent.device)
+                with torch.no_grad():
+                    next_value = self.agent.critic(last_global_state).item()
+            else:
+                last_state = torch.FloatTensor(np.array(states[-1])).unsqueeze(0).to(self.agent.device)
+                with torch.no_grad():
+                    next_value = self.agent.critic(last_state).item()
         else:
             next_value = 0.0
 
@@ -298,19 +305,34 @@ class PPOTrainer:
         advantages, returns = self.agent.compute_gae(rewards, values, dones, next_value)
 
         # states를 numpy array로 변환 (경고 방지)
-        import numpy as np
         states_array = np.array(states, dtype=np.float32)
 
-        # PPO 업데이트
-        loss = self.agent.update(
-            states=states_array,
-            actions=actions,
-            old_log_probs=old_log_probs,
-            returns=returns,
-            advantages=advantages,
-            epochs=self.update_epochs,
-            batch_size=self.batch_size
-        )
+        # MAPPO: global_states도 변환
+        if global_states is not None and len(global_states) > 0:
+            global_states_array = np.array(global_states, dtype=np.float32)
+
+            # MAPPO 업데이트
+            loss = self.agent.update(
+                states=states_array,
+                global_states=global_states_array,
+                actions=actions,
+                old_log_probs=old_log_probs,
+                returns=returns,
+                advantages=advantages,
+                epochs=self.update_epochs,
+                batch_size=self.batch_size
+            )
+        else:
+            # PPO 업데이트
+            loss = self.agent.update(
+                states=states_array,
+                actions=actions,
+                old_log_probs=old_log_probs,
+                returns=returns,
+                advantages=advantages,
+                epochs=self.update_epochs,
+                batch_size=self.batch_size
+            )
 
         return loss
 

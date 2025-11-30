@@ -76,9 +76,10 @@ class Controller(AtomicDEVS):
         self.step_experiences = []  # [(state, action, reward, next_state, done), ...] - DQN용
         self.current_rewards = {}   # 현재 스텝의 보상
 
-        # PPO용 trajectory 데이터
+        # PPO/MAPPO용 trajectory 데이터
         self.ppo_trajectory = {
             'states': [],
+            'global_states': [],  # MAPPO: 전역 상태
             'actions': [],
             'log_probs': [],
             'values': [],
@@ -171,18 +172,27 @@ class Controller(AtomicDEVS):
         action_types = [ACTION_MOVE, ACTION_ROTATE_CW, ACTION_ROTATE_CCW, ACTION_STOP]
 
         if self.rl_agent is not None and hasattr(self.rl_agent, 'select_action'):
-            # PPO 에이전트 연동
+            # PPO/MAPPO 에이전트 연동
             state = self._observation_to_state(obs)
             action_mask = self._compute_action_mask(obs, rid=rid)
 
-            # PPO 에이전트가 확률 분포를 사용하여 행동 선택
-            action_idx, log_prob, value = self.rl_agent.select_action(state, action_mask)
+            # MAPPO: global state 생성 (모든 로봇의 관찰값 사용)
+            global_state = self._observation_to_global_state()
 
-            # 현재 스텝의 정보 저장 (PPO 학습용)
+            # MAPPO 에이전트인지 확인 (global_state_dim 속성 존재 여부)
+            if hasattr(self.rl_agent, 'global_state_dim'):
+                # MAPPO: global state 전달
+                action_idx, log_prob, value = self.rl_agent.select_action(state, global_state, action_mask)
+            else:
+                # PPO: local state만 사용
+                action_idx, log_prob, value = self.rl_agent.select_action(state, action_mask)
+
+            # 현재 스텝의 정보 저장 (학습용)
             if not hasattr(self, 'step_data'):
                 self.step_data = {}
             self.step_data[rid] = {
                 'state': state,
+                'global_state': global_state,
                 'action': action_idx,
                 'log_prob': log_prob,
                 'value': value
@@ -492,6 +502,33 @@ class Controller(AtomicDEVS):
 
         return state
 
+    def _observation_to_global_state(self):
+        """
+        모든 로봇의 관찰 데이터를 합쳐 전역 상태 표현으로 변환 (MAPPO용)
+
+        Returns:
+            강화학습 전역 상태 표현 (numpy array)
+            차원: num_robots * 13 (각 로봇의 local state를 연결)
+        """
+        import numpy as np
+
+        global_state_list = []
+
+        # 모든 로봇의 관찰값을 순서대로 추가
+        for rid in range(self.num_robots):
+            if rid in self.state.observations:
+                # 각 로봇의 local state 생성
+                local_state = self._observation_to_state(self.state.observations[rid])
+                global_state_list.append(local_state)
+            else:
+                # 관찰이 없으면 0으로 채움
+                global_state_list.append(np.zeros(13, dtype=np.float32))
+
+        # 모든 local state를 연결하여 global state 생성
+        global_state = np.concatenate(global_state_list, axis=0)
+
+        return global_state
+
     def get_step_experiences(self):
         """
         현재까지 수집된 스텝 경험 데이터를 반환하고 초기화 (DQN용)
@@ -505,14 +542,15 @@ class Controller(AtomicDEVS):
 
     def get_ppo_trajectory(self):
         """
-        PPO trajectory 데이터 가져오기 (PPO Trainer에서 호출)
+        PPO/MAPPO trajectory 데이터 가져오기 (Trainer에서 호출)
 
         Returns:
-            dict: {'states': [...], 'actions': [...], 'log_probs': [...],
-                   'values': [...], 'rewards': [...], 'dones': [...]}
+            dict: {'states': [...], 'global_states': [...], 'actions': [...],
+                   'log_probs': [...], 'values': [...], 'rewards': [...], 'dones': [...]}
         """
         trajectory = {
             'states': self.ppo_trajectory['states'].copy(),
+            'global_states': self.ppo_trajectory['global_states'].copy(),
             'actions': self.ppo_trajectory['actions'].copy(),
             'log_probs': self.ppo_trajectory['log_probs'].copy(),
             'values': self.ppo_trajectory['values'].copy(),
@@ -522,6 +560,7 @@ class Controller(AtomicDEVS):
         # 초기화
         self.ppo_trajectory = {
             'states': [],
+            'global_states': [],
             'actions': [],
             'log_probs': [],
             'values': [],
@@ -565,10 +604,11 @@ class Controller(AtomicDEVS):
             # DQN용 경험 저장
             self.step_experiences.append((prev_state, action, reward, next_state, done))
 
-            # PPO용 trajectory 저장
+            # PPO/MAPPO용 trajectory 저장
             if hasattr(self, 'step_data') and rid in self.step_data:
                 step_info = self.step_data[rid]
                 self.ppo_trajectory['states'].append(step_info['state'])
+                self.ppo_trajectory['global_states'].append(step_info['global_state'])
                 self.ppo_trajectory['actions'].append(step_info['action'])
                 self.ppo_trajectory['log_probs'].append(step_info['log_prob'])
                 self.ppo_trajectory['values'].append(step_info['value'])
