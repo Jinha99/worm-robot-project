@@ -508,20 +508,30 @@ class Controller(AtomicDEVS):
 
         Returns:
             강화학습 전역 상태 표현 (numpy array)
-            차원: num_robots * 13 (각 로봇의 local state를 연결)
+            차원: 고정된 크기 (MAPPO agent의 global_state_dim)
+            커리큘럼 학습을 위해 항상 최대 로봇 수 크기로 패딩
         """
         import numpy as np
 
+        # MAPPO agent의 global_state_dim 가져오기
+        if hasattr(self.rl_agent, 'global_state_dim'):
+            expected_global_dim = self.rl_agent.global_state_dim
+            state_per_robot = 13  # local state dimension
+            max_robots = expected_global_dim // state_per_robot
+        else:
+            # MAPPO가 아니면 현재 로봇 수만 사용
+            max_robots = self.num_robots
+
         global_state_list = []
 
-        # 모든 로봇의 관찰값을 순서대로 추가
-        for rid in range(self.num_robots):
-            if rid in self.state.observations:
+        # 최대 로봇 수만큼 반복 (커리큘럼 학습 대응)
+        for rid in range(max_robots):
+            if rid < self.num_robots and rid in self.state.observations:
                 # 각 로봇의 local state 생성
                 local_state = self._observation_to_state(self.state.observations[rid])
                 global_state_list.append(local_state)
             else:
-                # 관찰이 없으면 0으로 채움
+                # 로봇이 없으면 0으로 패딩
                 global_state_list.append(np.zeros(13, dtype=np.float32))
 
         # 모든 local state를 연결하여 global state 생성
